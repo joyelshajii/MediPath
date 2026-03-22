@@ -4,15 +4,9 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = path.join(__dirname, '..', 'campuspath.sqlite');
+const DB_PATH = path.join(__dirname, '..', 'medipath.sqlite');
 
-// We expose a promise-based approach internally but provide synchronous-like API via a wrapper
 let _db = null;
-
-// ─── Synchronous-style wrapper ────────────────────────────
-// sql.js is sync after initialization; we just need to init the WASM first.
-// We expose `getDb()` which returns the initialized DB instance.
-
 let _dbReady = false;
 let _dbInitCallbacks = [];
 
@@ -25,6 +19,10 @@ async function initDb() {
   _db = new SQL.Database(data || undefined);
   _db.run('PRAGMA foreign_keys = ON;');
   createSchema();
+  // Migration: add patient_id if not exists
+  try {
+    _db.run('ALTER TABLE Feedback ADD COLUMN patient_id TEXT;');
+  } catch (e) { /* already exists */ }
   seed();
   _dbReady = true;
   _dbInitCallbacks.forEach(cb => cb(_db));
@@ -69,46 +67,103 @@ function all(sql, params = []) {
 // ─── Schema ───────────────────────────────────────────────
 function createSchema() {
   _db.run(`
+    CREATE TABLE IF NOT EXISTS Facilities (
+      facility_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      address TEXT,
+      type TEXT NOT NULL DEFAULT 'hospital'
+    );
+
     CREATE TABLE IF NOT EXISTS Roles (
-      role_id INTEGER PRIMARY KEY AUTOINCREMENT, role_name TEXT NOT NULL UNIQUE
+      role_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      role_name TEXT NOT NULL UNIQUE
     );
+
     CREATE TABLE IF NOT EXISTS Departments (
-      dept_id INTEGER PRIMARY KEY AUTOINCREMENT, dept_name TEXT NOT NULL UNIQUE, dept_code TEXT NOT NULL UNIQUE
+      dept_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      facility_id INTEGER NOT NULL DEFAULT 1,
+      dept_name TEXT NOT NULL,
+      dept_code TEXT NOT NULL,
+      floor TEXT,
+      UNIQUE(facility_id, dept_code)
     );
+
     CREATE TABLE IF NOT EXISTS Users (
-      user_id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL, role_id INTEGER NOT NULL, dept_id INTEGER,
-      full_name TEXT NOT NULL, email TEXT UNIQUE, is_active INTEGER NOT NULL DEFAULT 1
+      user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role_id INTEGER NOT NULL,
+      dept_id INTEGER,
+      facility_id INTEGER NOT NULL DEFAULT 1,
+      full_name TEXT NOT NULL,
+      email TEXT UNIQUE,
+      is_active INTEGER NOT NULL DEFAULT 1
     );
-    CREATE TABLE IF NOT EXISTS Faculty (
-      faculty_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL UNIQUE,
-      dept_id INTEGER NOT NULL, designation TEXT NOT NULL DEFAULT 'Assistant Professor',
-      default_room_id INTEGER, phone TEXT
+
+    CREATE TABLE IF NOT EXISTS Nodes (
+      node_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      facility_id INTEGER NOT NULL DEFAULT 1,
+      x REAL NOT NULL,
+      y REAL NOT NULL,
+      floor TEXT NOT NULL DEFAULT 'Ground',
+      node_type TEXT NOT NULL DEFAULT 'corridor',
+      label TEXT,
+      qr_code TEXT UNIQUE
     );
-    CREATE TABLE IF NOT EXISTS Students (
-      student_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL UNIQUE,
-      dept_id INTEGER NOT NULL, roll_number TEXT NOT NULL UNIQUE, semester INTEGER NOT NULL DEFAULT 1
+
+    CREATE TABLE IF NOT EXISTS Edges (
+      edge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      facility_id INTEGER NOT NULL DEFAULT 1,
+      from_node_id INTEGER NOT NULL,
+      to_node_id INTEGER NOT NULL,
+      distance REAL NOT NULL DEFAULT 1.0,
+      is_accessible INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(from_node_id, to_node_id)
     );
-    CREATE TABLE IF NOT EXISTS Location (
-      location_id INTEGER PRIMARY KEY AUTOINCREMENT, dept_id INTEGER,
-      location_name TEXT NOT NULL, location_type TEXT NOT NULL,
-      building TEXT, floor TEXT, nav_guide TEXT
+
+    CREATE TABLE IF NOT EXISTS Doctors (
+      doctor_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE,
+      dept_id INTEGER NOT NULL,
+      specialization TEXT NOT NULL,
+      designation TEXT NOT NULL DEFAULT 'Consultant',
+      current_node_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'available',
+      phone TEXT,
+      consultation_fee REAL
     );
-    CREATE TABLE IF NOT EXISTS Time_Slot (
-      slot_id INTEGER PRIMARY KEY AUTOINCREMENT, slot_label TEXT NOT NULL,
-      start_time TEXT NOT NULL, end_time TEXT NOT NULL
+
+    CREATE TABLE IF NOT EXISTS Feedback (
+      feedback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      doctor_id INTEGER NOT NULL,
+      patient_user_id INTEGER,
+      patient_id TEXT,
+      raw_text TEXT NOT NULL,
+      rating INTEGER DEFAULT 3,
+      sentiment_score REAL,
+      extracted_keywords TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE IF NOT EXISTS Schedule (
-      schedule_id INTEGER PRIMARY KEY AUTOINCREMENT, faculty_id INTEGER NOT NULL,
-      slot_id INTEGER NOT NULL, location_id INTEGER NOT NULL,
-      day_of_week TEXT NOT NULL, subject TEXT NOT NULL,
-      UNIQUE(faculty_id, slot_id, day_of_week)
+
+    CREATE TABLE IF NOT EXISTS Schedules (
+      schedule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      schedule_type TEXT NOT NULL DEFAULT 'appointment',
+      start_time TEXT NOT NULL,
+      end_time TEXT NOT NULL,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-    CREATE TABLE IF NOT EXISTS Events (
-      event_id INTEGER PRIMARY KEY AUTOINCREMENT, dept_id INTEGER, location_id INTEGER,
-      created_by INTEGER NOT NULL, event_name TEXT NOT NULL, description TEXT,
-      event_date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
-      is_public INTEGER NOT NULL DEFAULT 1
+
+    CREATE TABLE IF NOT EXISTS NurseAllocations (
+      allocation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      nurse_user_id INTEGER NOT NULL,
+      doctor_id INTEGER NOT NULL,
+      duty_date TEXT NOT NULL,
+      shift TEXT NOT NULL DEFAULT 'day',
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
 }
@@ -117,169 +172,262 @@ function createSchema() {
 function seed() {
   const existing = get('SELECT COUNT(*) as c FROM Roles');
   if (existing && existing.c > 0) { console.log('[DB] Already seeded.'); return; }
-  console.log('[DB] Seeding database...');
+  console.log('[DB] Seeding MediPath database...');
 
-  // Roles
-  for (const r of ['admin', 'hod', 'coordinator', 'faculty', 'student']) {
+  // ── Facility ──
+  run(`INSERT INTO Facilities(name, address, type) VALUES(?, ?, ?)`,
+    ["St. Joseph's Mission Hospital", 'Mannanam, Kottayam, Kerala 686561', 'hospital']);
+
+  // ── Roles ──
+  for (const r of ['admin', 'hod', 'coordinator', 'doctor', 'nurse', 'patient', 'receptionist']) {
     run('INSERT INTO Roles(role_name) VALUES(?)', [r]);
   }
   const getRoleId = (n) => get('SELECT role_id FROM Roles WHERE role_name=?', [n]).role_id;
 
-  // Departments
-  run('INSERT INTO Departments(dept_name,dept_code) VALUES(?,?)', ['Computer Science & Engineering', 'CSE']);
-  run('INSERT INTO Departments(dept_name,dept_code) VALUES(?,?)', ['Electronics & Communication', 'ECE']);
-  const cseDeptId = get('SELECT dept_id FROM Departments WHERE dept_code=?', ['CSE']).dept_id;
+  // ── Departments ──
+  const depts = [
+    ['General Medicine', 'MED', 'Ground Floor'],
+    ['Cardiology', 'CARD', 'First Floor'],
+    ['Orthopedics', 'ORTH', 'First Floor'],
+    ['Pediatrics', 'PED', 'Ground Floor'],
+    ['Radiology', 'RAD', 'Basement'],
+    ['Emergency', 'ER', 'Ground Floor'],
+  ];
+  for (const [name, code, floor] of depts) {
+    run('INSERT INTO Departments(facility_id, dept_name, dept_code, floor) VALUES(1,?,?,?)', [name, code, floor]);
+  }
+  const getDeptId = (code) => get('SELECT dept_id FROM Departments WHERE dept_code=?', [code]).dept_id;
+  const medDept = getDeptId('MED');
+  const cardDept = getDeptId('CARD');
+  const orthDept = getDeptId('ORTH');
+  const pedDept = getDeptId('PED');
+  const radDept = getDeptId('RAD');
+  const erDept = getDeptId('ER');
 
-  // Time Slots
-  for (const [l, s, e] of [['Period 1', '08:30', '09:25'], ['Period 2', '09:25', '10:20'], ['Period 3', '10:35', '11:30'], ['Period 4', '11:30', '12:25'], ['Period 5', '13:15', '14:10'], ['Period 6', '14:10', '15:05'], ['Period 7', '15:05', '16:00']]) {
-    run('INSERT INTO Time_Slot(slot_label,start_time,end_time) VALUES(?,?,?)', [l, s, e]);
+  // ── Nodes — Hospital Floor Plan ──
+  // Ground Floor nodes (y: 50-350)
+  const nodes = [
+    // Main Entrance & Lobby
+    [100, 400, 'Ground', 'entrance', 'Main Entrance', 'QR-ENTRANCE-MAIN'],
+    [250, 400, 'Ground', 'corridor', 'Reception Lobby', 'QR-LOBBY'],
+    [250, 300, 'Ground', 'room', 'Reception Desk', 'QR-RECEPTION'],
+    // Ground Floor Corridor
+    [250, 200, 'Ground', 'corridor', 'Ground Corridor A', null],
+    [400, 200, 'Ground', 'corridor', 'Ground Corridor B', null],
+    [550, 200, 'Ground', 'corridor', 'Ground Corridor C', null],
+    [700, 200, 'Ground', 'corridor', 'Ground Corridor D', null],
+    // Ground Floor Rooms
+    [400, 100, 'Ground', 'room', 'Room G-101 (Gen Med)', 'QR-G101'],
+    [400, 300, 'Ground', 'room', 'Room G-102 (Gen Med)', 'QR-G102'],
+    [550, 100, 'Ground', 'room', 'Room G-103 (Pediatrics)', 'QR-G103'],
+    [550, 300, 'Ground', 'room', 'Room G-104 (Pediatrics)', 'QR-G104'],
+    [700, 100, 'Ground', 'room', 'ER Bay 1', 'QR-ER1'],
+    [700, 300, 'Ground', 'room', 'ER Bay 2', 'QR-ER2'],
+    // Elevator & Stairs
+    [250, 100, 'Ground', 'elevator', 'Elevator (Ground)', 'QR-ELEV-G'],
+    [150, 100, 'Ground', 'stairs', 'Stairwell (Ground)', 'QR-STAIRS-G'],
+    // Emergency Entrance
+    [850, 200, 'Ground', 'entrance', 'Emergency Entrance', 'QR-ENTRANCE-ER'],
+    // First Floor nodes (y: 50-350)
+    [250, 100, 'First', 'elevator', 'Elevator (First)', 'QR-ELEV-F1'],
+    [150, 100, 'First', 'stairs', 'Stairwell (First)', 'QR-STAIRS-F1'],
+    [250, 200, 'First', 'corridor', 'First Floor Corridor A', null],
+    [400, 200, 'First', 'corridor', 'First Floor Corridor B', null],
+    [550, 200, 'First', 'corridor', 'First Floor Corridor C', null],
+    [700, 200, 'First', 'corridor', 'First Floor Corridor D', null],
+    // First Floor Rooms
+    [400, 100, 'First', 'room', 'Room F-201 (Cardiology)', 'QR-F201'],
+    [400, 300, 'First', 'room', 'Room F-202 (Cardiology)', 'QR-F202'],
+    [550, 100, 'First', 'room', 'Room F-203 (Orthopedics)', 'QR-F203'],
+    [550, 300, 'First', 'room', 'Room F-204 (Orthopedics)', 'QR-F204'],
+    [700, 100, 'First', 'room', 'Room F-205 (Surgery)', 'QR-F205'],
+    [700, 300, 'First', 'room', 'Room F-206 (ICU)', 'QR-F206'],
+    // Basement nodes
+    [250, 100, 'Basement', 'elevator', 'Elevator (Basement)', 'QR-ELEV-B'],
+    [250, 200, 'Basement', 'corridor', 'Basement Corridor', null],
+    [400, 200, 'Basement', 'room', 'Radiology Lab', 'QR-RAD-LAB'],
+    [550, 200, 'Basement', 'room', 'MRI Room', 'QR-MRI'],
+    [400, 100, 'Basement', 'room', 'Pharmacy', 'QR-PHARMACY'],
+  ];
+
+  for (const [x, y, floor, type, label, qr] of nodes) {
+    run('INSERT INTO Nodes(facility_id, x, y, floor, node_type, label, qr_code) VALUES(1,?,?,?,?,?,?)',
+      [x, y, floor, type, label, qr || null]);
   }
 
-  // Locations
-  const locs = [
-    [cseDeptId, 'CSE Lab 1', 'lab', 'Tech Block', 'Ground Floor', 'Enter Tech Block main entrance, turn left, first door on right — Room TG-01.'],
-    [cseDeptId, 'CSE Lab 2', 'lab', 'Tech Block', 'Ground Floor', 'Enter Tech Block main entrance, turn left, second door on right — Room TG-02.'],
-    [cseDeptId, 'AI & ML Lab', 'lab', 'Tech Block', 'First Floor', 'Take stairs to first floor, straight down the corridor — Room TF-10.'],
-    [cseDeptId, 'Networking Lab', 'lab', 'Tech Block', 'First Floor', 'First floor, left wing, end of corridor — Room TF-12.'],
-    [cseDeptId, 'CS Classroom A', 'classroom', 'Main Block', 'Ground Floor', 'Main Block ground floor, right wing, Room MG-03.'],
-    [cseDeptId, 'CS Classroom B', 'classroom', 'Main Block', 'Ground Floor', 'Main Block ground floor, right wing, Room MG-04.'],
-    [cseDeptId, 'CS Classroom C', 'classroom', 'Main Block', 'First Floor', 'First floor, right wing — Room MF-05.'],
-    [cseDeptId, 'Project Lab', 'lab', 'Tech Block', 'Second Floor', 'Second floor, Tech Block — Room TS-01 (near lift).'],
-    [cseDeptId, 'HOD Staff Room', 'staff_room', 'Admin Block', 'First Floor', 'Admin Block, first floor, corridor end — Room AF-01.'],
-    [cseDeptId, 'Faculty Staff Room A', 'staff_room', 'Tech Block', 'Ground Floor', 'Tech Block, ground floor, behind the reception — Room TG-10.'],
-    [cseDeptId, 'Faculty Staff Room B', 'staff_room', 'Tech Block', 'First Floor', 'Tech Block, first floor, left of the stairwell — Room TF-11.'],
-    [null, 'Main Auditorium', 'auditorium', 'Main Block', 'Ground Floor', 'Enter main gate, straight ahead — the large hall at the end of the corridor.'],
+  const getNodeId = (label) => get('SELECT node_id FROM Nodes WHERE label=?', [label]).node_id;
+
+  // ── Edges ──
+  const edges = [
+    // Ground Floor connections
+    ['Main Entrance', 'Reception Lobby', 2],
+    ['Reception Lobby', 'Reception Desk', 1.5],
+    ['Reception Lobby', 'Ground Corridor A', 3],
+    ['Ground Corridor A', 'Ground Corridor B', 3],
+    ['Ground Corridor B', 'Ground Corridor C', 3],
+    ['Ground Corridor C', 'Ground Corridor D', 3],
+    ['Ground Corridor B', 'Room G-101 (Gen Med)', 1.5],
+    ['Ground Corridor B', 'Room G-102 (Gen Med)', 1.5],
+    ['Ground Corridor C', 'Room G-103 (Pediatrics)', 1.5],
+    ['Ground Corridor C', 'Room G-104 (Pediatrics)', 1.5],
+    ['Ground Corridor D', 'ER Bay 1', 1.5],
+    ['Ground Corridor D', 'ER Bay 2', 1.5],
+    ['Ground Corridor A', 'Elevator (Ground)', 1.5],
+    ['Ground Corridor A', 'Stairwell (Ground)', 2],
+    ['Ground Corridor D', 'Emergency Entrance', 2.5],
+    // Elevator connections between floors
+    ['Elevator (Ground)', 'Elevator (First)', 2],
+    ['Elevator (Ground)', 'Elevator (Basement)', 2],
+    ['Elevator (First)', 'Elevator (Basement)', 4],
+    // Stairwell connections
+    ['Stairwell (Ground)', 'Stairwell (First)', 3],
+    // First Floor connections
+    ['Elevator (First)', 'First Floor Corridor A', 1.5],
+    ['Stairwell (First)', 'First Floor Corridor A', 2],
+    ['First Floor Corridor A', 'First Floor Corridor B', 3],
+    ['First Floor Corridor B', 'First Floor Corridor C', 3],
+    ['First Floor Corridor C', 'First Floor Corridor D', 3],
+    ['First Floor Corridor B', 'Room F-201 (Cardiology)', 1.5],
+    ['First Floor Corridor B', 'Room F-202 (Cardiology)', 1.5],
+    ['First Floor Corridor C', 'Room F-203 (Orthopedics)', 1.5],
+    ['First Floor Corridor C', 'Room F-204 (Orthopedics)', 1.5],
+    ['First Floor Corridor D', 'Room F-205 (Surgery)', 1.5],
+    ['First Floor Corridor D', 'Room F-206 (ICU)', 1.5],
+    // Basement connections
+    ['Elevator (Basement)', 'Basement Corridor', 1.5],
+    ['Basement Corridor', 'Radiology Lab', 2],
+    ['Basement Corridor', 'MRI Room', 3],
+    ['Basement Corridor', 'Pharmacy', 2],
   ];
-  for (const [d, n, t, b, f, g] of locs) run('INSERT INTO Location(dept_id,location_name,location_type,building,floor,nav_guide) VALUES(?,?,?,?,?,?)', [d, n, t, b, f, g]);
 
-  const getLoc = (n) => get('SELECT location_id FROM Location WHERE location_name=?', [n]).location_id;
-  const staffRoomA = getLoc('Faculty Staff Room A');
-  const staffRoomB = getLoc('Faculty Staff Room B');
-  const hodRoom = getLoc('HOD Staff Room');
+  for (const [fromLabel, toLabel, dist] of edges) {
+    const fromId = getNodeId(fromLabel);
+    const toId = getNodeId(toLabel);
+    run('INSERT INTO Edges(facility_id, from_node_id, to_node_id, distance) VALUES(1,?,?,?)', [fromId, toId, dist]);
+    // Bidirectional
+    run('INSERT INTO Edges(facility_id, from_node_id, to_node_id, distance) VALUES(1,?,?,?)', [toId, fromId, dist]);
+  }
 
-  // Create user helper
+  // ── Create user helper ──
   const createUser = (uname, pw, role, deptId, name, email) => {
     const hash = bcrypt.hashSync(pw, 10);
     const rid = getRoleId(role);
-    return run('INSERT INTO Users(username,password_hash,role_id,dept_id,full_name,email) VALUES(?,?,?,?,?,?)', [uname, hash, rid, deptId, name, email || null]).lastInsertRowid;
+    return run('INSERT INTO Users(username,password_hash,role_id,dept_id,facility_id,full_name,email) VALUES(?,?,?,?,1,?,?)',
+      [uname, hash, rid, deptId, name, email || null]).lastInsertRowid;
   };
 
-  // Admin
-  createUser('admin', 'admin123', 'admin', null, 'System Administrator', 'admin@campuspath.edu');
+  // ── Admin ──
+  createUser('admin', 'admin123', 'admin', null, 'System Administrator', 'admin@medipath.in');
 
-  // HOD
-  const hodUid = createUser('hod.cse', 'hod123', 'hod', cseDeptId, 'Dr. Priya Menon', 'priya.menon@cse.edu');
-  const hodFacId = run('INSERT INTO Faculty(user_id,dept_id,designation,default_room_id,phone) VALUES(?,?,?,?,?)', [hodUid, cseDeptId, 'Professor & HOD', hodRoom, '9876543210']).lastInsertRowid;
+  // ── Receptionist ──
+  createUser('reception1', 'rec123', 'receptionist', null, 'Anitha Krishnan', 'anitha@sjmh.in');
 
-  // Coordinators (no faculty record)
-  createUser('coord.cse1', 'coord123', 'coordinator', cseDeptId, 'Mr. Arun Kumar', 'arun.kumar@cse.edu');
-  createUser('coord.cse2', 'coord123', 'coordinator', cseDeptId, 'Ms. Divya Nair', 'divya.nair@cse.edu');
-
-  // Faculty (5)
-  const fac1Uid = createUser('alice.john', 'fac123', 'faculty', cseDeptId, 'Dr. Alice Johnson', 'alice.j@cse.edu');
-  const fac2Uid = createUser('bob.smith', 'fac123', 'faculty', cseDeptId, 'Prof. Bob Smith', 'bob.s@cse.edu');
-  const fac3Uid = createUser('carol.das', 'fac123', 'faculty', cseDeptId, 'Dr. Carol Das', 'carol.d@cse.edu');
-  const fac4Uid = createUser('david.raj', 'fac123', 'faculty', cseDeptId, 'Prof. David Raj', 'david.r@cse.edu');
-  const fac5Uid = createUser('eva.thomas', 'fac123', 'faculty', cseDeptId, 'Dr. Eva Thomas', 'eva.t@cse.edu');
-
-  const ins = (uid, deptId, desig, room, ph) => run('INSERT INTO Faculty(user_id,dept_id,designation,default_room_id,phone) VALUES(?,?,?,?,?)', [uid, deptId, desig, room, ph]).lastInsertRowid;
-  const f1 = ins(fac1Uid, cseDeptId, 'Associate Professor', staffRoomA, '9001001001');
-  const f2 = ins(fac2Uid, cseDeptId, 'Assistant Professor', staffRoomA, '9001001002');
-  const f3 = ins(fac3Uid, cseDeptId, 'Associate Professor', staffRoomB, '9001001003');
-  const f4 = ins(fac4Uid, cseDeptId, 'Assistant Professor', staffRoomB, '9001001004');
-  const f5 = ins(fac5Uid, cseDeptId, 'Assistant Professor', staffRoomA, '9001001005');
-
-  // Students (10)
-  const students = [
-    ['s001', 'stu1', cseDeptId, 'Rahul Sharma', 's001@student.edu', 'CS2021001', 5],
-    ['s002', 'stu1', cseDeptId, 'Sneha Pillai', 's002@student.edu', 'CS2021002', 5],
-    ['s003', 'stu1', cseDeptId, 'Arjun Nambiar', 's003@student.edu', 'CS2021003', 5],
-    ['s004', 'stu1', cseDeptId, 'Pooja Iyer', 's004@student.edu', 'CS2021004', 5],
-    ['s005', 'stu1', cseDeptId, 'Kiran Babu', 's005@student.edu', 'CS2021005', 5],
-    ['s006', 'stu1', cseDeptId, 'Meera George', 's006@student.edu', 'CS2022001', 3],
-    ['s007', 'stu1', cseDeptId, 'Vishnu Krishnan', 's007@student.edu', 'CS2022002', 3],
-    ['s008', 'stu1', cseDeptId, 'Anjali Das', 's008@student.edu', 'CS2022003', 3],
-    ['s009', 'stu1', cseDeptId, 'Rohan Mathew', 's009@student.edu', 'CS2023001', 1],
-    ['s010', 'stu1', cseDeptId, 'Lakshmi Suresh', 's010@student.edu', 'CS2023002', 1],
+  // ── Doctors ──
+  const docData = [
+    ['dr.kumar', 'doc123', medDept, 'Dr. Rajesh Kumar', 'rajesh.kumar@sjmh.in', 'Internal Medicine', 'Senior Consultant', 'Room G-101 (Gen Med)', '9876543001', 500],
+    ['dr.mary', 'doc123', medDept, 'Dr. Mary Thomas', 'mary.thomas@sjmh.in', 'General Practice', 'Consultant', 'Room G-102 (Gen Med)', '9876543002', 400],
+    ['dr.anand', 'doc123', cardDept, 'Dr. Anand Pillai', 'anand.pillai@sjmh.in', 'Cardiology', 'Senior Consultant', 'Room F-201 (Cardiology)', '9876543003', 800],
+    ['dr.priya', 'doc123', cardDept, 'Dr. Priya Menon', 'priya.menon@sjmh.in', 'Interventional Cardiology', 'Consultant', 'Room F-202 (Cardiology)', '9876543004', 700],
+    ['dr.suresh', 'doc123', orthDept, 'Dr. Suresh Nair', 'suresh.nair@sjmh.in', 'Orthopedic Surgery', 'HOD & Senior Consultant', 'Room F-203 (Orthopedics)', '9876543005', 600],
+    ['dr.leena', 'doc123', pedDept, 'Dr. Leena George', 'leena.george@sjmh.in', 'Pediatrics', 'Senior Consultant', 'Room G-103 (Pediatrics)', '9876543006', 450],
   ];
-  for (const [uname, pw, dept, name, email, roll, sem] of students) {
-    const uid = createUser(uname, pw, 'student', dept, name, email);
-    run('INSERT INTO Students(user_id,dept_id,roll_number,semester) VALUES(?,?,?,?)', [uid, dept, roll, sem]);
+
+  for (const [uname, pw, deptId, name, email, spec, desig, roomLabel, phone, fee] of docData) {
+    const uid = createUser(uname, pw, 'doctor', deptId, name, email);
+    const nodeId = getNodeId(roomLabel);
+    run('INSERT INTO Doctors(user_id, dept_id, specialization, designation, current_node_id, status, phone, consultation_fee) VALUES(?,?,?,?,?,?,?,?)',
+      [uid, deptId, spec, desig, nodeId, 'available', phone, fee]);
   }
 
-  // Schedule
-  const getSlot = (l) => get('SELECT slot_id FROM Time_Slot WHERE slot_label=?', [l]).slot_id;
-  const addSched = (fid, slot, loc, day, sub) => {
-    try { run('INSERT OR IGNORE INTO Schedule(faculty_id,slot_id,location_id,day_of_week,subject) VALUES(?,?,?,?,?)', [fid, getSlot(slot), getLoc(loc), day, sub]); } catch (e) { }
+  // ── Patients ──
+  const patients = [
+    ['patient1', 'pat123', null, 'Rahul Sharma', 'rahul.sharma@email.com'],
+    ['patient2', 'pat123', null, 'Sneha Pillai', 'sneha.pillai@email.com'],
+    ['patient3', 'pat123', null, 'Arjun Menon', 'arjun.menon@email.com'],
+    ['patient4', 'pat123', null, 'Pooja Nair', 'pooja.nair@email.com'],
+    ['patient5', 'pat123', null, 'Kiran Babu', 'kiran.babu@email.com'],
+  ];
+  for (const [uname, pw, deptId, name, email] of patients) {
+    createUser(uname, pw, 'patient', deptId, name, email);
+  }
+
+  // ── Nurses ──
+  const nurseUid = createUser('nurse.susan', 'nurse123', 'nurse', medDept, 'Susan Philip', 'susan.philip@sjmh.in');
+  createUser('nurse.divya', 'nurse123', 'nurse', cardDept, 'Divya Nair', 'divya.nair@sjmh.in');
+
+  // ── HoDs ──
+  createUser('hod.med', 'hod123', 'hod', medDept, 'Dr. Anil Varghese', 'anil.varghese@sjmh.in');
+  createUser('hod.card', 'hod123', 'hod', cardDept, 'Dr. Shalini Das', 'shalini.das@sjmh.in');
+
+  // ── Coordinators ──
+  createUser('coord.med', 'coord123', 'coordinator', medDept, 'Meera Krishnan', 'meera.k@sjmh.in');
+  createUser('coord.card', 'coord123', 'coordinator', cardDept, 'Rajan Menon', 'rajan.m@sjmh.in');
+
+  // ── Sample Schedules ──
+  const getUserId = (uname) => get('SELECT user_id FROM Users WHERE username=?', [uname]).user_id;
+  const schedules = [
+    [getUserId('dr.kumar'), 'Morning OPD', 'opd', '2026-03-22T09:00:00', '2026-03-22T13:00:00', 'General consultation'],
+    [getUserId('dr.kumar'), 'Afternoon Rounds', 'appointment', '2026-03-22T14:00:00', '2026-03-22T16:00:00', 'Ward rounds'],
+    [getUserId('dr.anand'), 'Cardiac OPD', 'opd', '2026-03-22T10:00:00', '2026-03-22T14:00:00', 'Cardiology outpatient'],
+    [getUserId('dr.anand'), 'Angioplasty', 'surgery', '2026-03-23T08:00:00', '2026-03-23T12:00:00', 'Planned procedure'],
+    [getUserId('dr.suresh'), 'Knee Surgery', 'surgery', '2026-03-22T08:00:00', '2026-03-22T11:00:00', 'Total knee replacement'],
+    [getUserId('dr.suresh'), 'Leave', 'leave', '2026-03-25T00:00:00', '2026-03-26T23:59:59', 'Personal leave'],
+    [getUserId('dr.priya'), 'Echo Lab', 'appointment', '2026-03-22T09:00:00', '2026-03-22T12:00:00', 'Echocardiography readings'],
+    [getUserId('dr.leena'), 'Pediatric OPD', 'opd', '2026-03-22T09:00:00', '2026-03-22T13:00:00', 'Children outpatient'],
+    [nurseUid, 'Ward Duty', 'duty', '2026-03-22T07:00:00', '2026-03-22T15:00:00', 'Gen Med ward'],
+  ];
+  for (const [uid, title, type, start, end, notes] of schedules) {
+    run('INSERT INTO Schedules(user_id,title,schedule_type,start_time,end_time,notes) VALUES(?,?,?,?,?,?)', [uid, title, type, start, end, notes]);
+  }
+
+  // ── Nurse Allocations ──
+  const getDoctorId = (uname) => {
+    const u = get('SELECT user_id FROM Users WHERE username=?', [uname]);
+    return get('SELECT doctor_id FROM Doctors WHERE user_id=?', [u.user_id]).doctor_id;
   };
+  run('INSERT INTO NurseAllocations(nurse_user_id,doctor_id,duty_date,shift,notes) VALUES(?,?,?,?,?)',
+    [nurseUid, getDoctorId('dr.kumar'), '2026-03-22', 'day', 'Assist with morning OPD']);
+  run('INSERT INTO NurseAllocations(nurse_user_id,doctor_id,duty_date,shift,notes) VALUES(?,?,?,?,?)',
+    [getUserId('nurse.divya'), getDoctorId('dr.anand'), '2026-03-22', 'day', 'Assist in cardiac lab']);
 
-  // Dr. Alice Johnson
-  addSched(f1, 'Period 1', 'CS Classroom A', 'Mon', 'Data Structures');
-  addSched(f1, 'Period 3', 'CSE Lab 1', 'Mon', 'DS Lab');
-  addSched(f1, 'Period 5', 'CS Classroom A', 'Tue', 'Algorithms');
-  addSched(f1, 'Period 2', 'CS Classroom B', 'Wed', 'Data Structures');
-  addSched(f1, 'Period 6', 'CSE Lab 1', 'Thu', 'DS Lab');
-  addSched(f1, 'Period 1', 'CS Classroom C', 'Fri', 'Algorithms');
+  // ── Sample Feedback ──
+  const getPatientUid = (uname) => get('SELECT user_id FROM Users WHERE username=?', [uname]).user_id;
 
-  // Prof. Bob Smith
-  addSched(f2, 'Period 2', 'CS Classroom B', 'Mon', 'Computer Networks');
-  addSched(f2, 'Period 4', 'Networking Lab', 'Mon', 'Networks Lab');
-  addSched(f2, 'Period 1', 'CS Classroom A', 'Tue', 'Operating Systems');
-  addSched(f2, 'Period 3', 'CS Classroom B', 'Wed', 'Computer Networks');
-  addSched(f2, 'Period 5', 'Networking Lab', 'Thu', 'Networks Lab');
-  addSched(f2, 'Period 2', 'CS Classroom C', 'Fri', 'Operating Systems');
+  const feedbackData = [
+    ['dr.kumar', 'patient1', "Dr. Kumar is incredibly caring and attentive. He listened to all my concerns patiently and explained the diagnosis in detail. Very thorough examination. The clinic was clean and well-organized. Highly recommend him!", 5],
+    ['dr.kumar', 'patient2', "Good experience overall. Dr. Kumar is knowledgeable and professional. The only downside was the long waiting time — I waited for over an hour. But the consultation itself was excellent.", 4],
+    ['dr.kumar', 'patient3', "Excellent doctor. Very experienced and skilled. He took his time to explain the treatment plan. Felt very reassured after the visit. Clean and comfortable clinic.", 5],
+    ['dr.mary', 'patient1', "Dr. Mary was kind and friendly but seemed quite rushed during my consultation. She prescribed medication that worked, but I wish she had spent more time explaining the side effects.", 3],
+    ['dr.mary', 'patient4', "Prompt and efficient service. Dr. Mary is professional and gets straight to the point. Sometimes feels a bit cold in her approach, but her diagnosis was accurate.", 3],
+    ['dr.mary', 'patient5', "Pleasant experience. Dr. Mary is competent and helpful. The staff was courteous and the environment was clean. Would visit again.", 4],
+    ['dr.anand', 'patient2', "Dr. Anand is an exceptional cardiologist. His expertise is unmatched. He explained my heart condition with so much patience and clarity. I felt completely safe under his care. Truly outstanding!", 5],
+    ['dr.anand', 'patient3', "Outstanding experience with Dr. Anand. He is brilliant, compassionate, and thorough. The cardiac tests were conducted professionally. He took time to answer every question. Trustworthy and dedicated.", 5],
+    ['dr.priya', 'patient1', "Dr. Priya is a skilled cardiologist. Very knowledgeable and experienced. Explained the procedure clearly. Slight discomfort during the procedure but overall a great experience. Recommended!", 4],
+    ['dr.priya', 'patient4', "Very professional. Dr. Priya is efficient and caring. The only concern is that appointments are hard to get — had to wait weeks. But once you're in, the care is top-notch.", 4],
+    ['dr.suresh', 'patient5', "Dr. Suresh fixed my knee problem that others couldn't. He is truly an expert in orthopedics. A bit expensive, but worth every penny. The recovery was smooth and painless.", 5],
+    ['dr.suresh', 'patient2', "Good surgeon but the post-operative care could be better. Felt a bit ignored during follow-up visits. The surgery itself was successful and the results are excellent.", 3],
+    ['dr.suresh', 'patient3', "Experienced and skilled orthopedic surgeon. Dr. Suresh is very professional. The operation was effective and I recovered quickly. Grateful for his expertise.", 5],
+    ['dr.leena', 'patient4', "Dr. Leena is wonderful with children. My daughter was scared but Dr. Leena was so gentle and reassuring. She explained everything to both me and my child. Very caring and patient doctor.", 5],
+    ['dr.leena', 'patient5', "Amazing pediatrician! Dr. Leena is compassionate, attentive, and extremely knowledgeable about children's health. She takes her time with each patient. The clinic is child-friendly and welcoming.", 5],
+  ];
 
-  // Dr. Carol Das
-  addSched(f3, 'Period 3', 'CS Classroom C', 'Mon', 'Artificial Intelligence');
-  addSched(f3, 'Period 5', 'AI & ML Lab', 'Mon', 'AI Lab');
-  addSched(f3, 'Period 2', 'CS Classroom A', 'Tue', 'Machine Learning');
-  addSched(f3, 'Period 4', 'AI & ML Lab', 'Wed', 'AI Lab');
-  addSched(f3, 'Period 1', 'CS Classroom B', 'Thu', 'Artificial Intelligence');
-  addSched(f3, 'Period 3', 'CS Classroom C', 'Fri', 'Machine Learning');
+  const { processFeedback } = require('./feedback-engine');
 
-  // Prof. David Raj
-  addSched(f4, 'Period 4', 'CS Classroom A', 'Mon', 'Database Management');
-  addSched(f4, 'Period 6', 'CSE Lab 2', 'Mon', 'DBMS Lab');
-  addSched(f4, 'Period 3', 'CS Classroom B', 'Tue', 'Web Development');
-  addSched(f4, 'Period 1', 'CS Classroom C', 'Wed', 'Database Management');
-  addSched(f4, 'Period 4', 'CSE Lab 2', 'Thu', 'DBMS Lab');
-  addSched(f4, 'Period 5', 'CS Classroom A', 'Fri', 'Web Development');
-
-  // Dr. Eva Thomas
-  addSched(f5, 'Period 6', 'CS Classroom B', 'Mon', 'Cloud Computing');
-  addSched(f5, 'Period 7', 'Project Lab', 'Mon', 'Project Work');
-  addSched(f5, 'Period 4', 'CS Classroom C', 'Tue', 'Cyber Security');
-  addSched(f5, 'Period 5', 'CS Classroom B', 'Wed', 'Cloud Computing');
-  addSched(f5, 'Period 2', 'Project Lab', 'Thu', 'Project Work');
-  addSched(f5, 'Period 6', 'CS Classroom C', 'Fri', 'Cyber Security');
-
-  // HOD schedule
-  addSched(hodFacId, 'Period 1', 'CS Classroom B', 'Tue', 'Software Engineering');
-  addSched(hodFacId, 'Period 2', 'CS Classroom B', 'Thu', 'Research Methodology');
-
-  // Events
-  const adminUid = get('SELECT user_id FROM Users WHERE username=?', ['admin']).user_id;
-  const hodUidRef = get('SELECT user_id FROM Users WHERE username=?', ['hod.cse']).user_id;
-  const addEv = (deptId, locName, uid, name, desc, date, st, et) =>
-    run('INSERT INTO Events(dept_id,location_id,created_by,event_name,description,event_date,start_time,end_time,is_public) VALUES(?,?,?,?,?,?,?,?,1)', [deptId, getLoc(locName), uid, name, desc, date, st, et]);
-
-  addEv(cseDeptId, 'Main Auditorium', hodUidRef, 'TechTalks 2026: AI Revolution', 'A seminar featuring industry experts on the latest AI trends.', '2026-03-05', '10:00', '13:00');
-  addEv(cseDeptId, 'AI & ML Lab', hodUidRef, 'ML Workshop — Hands On', 'Practical workshop on building ML models using Python and TensorFlow.', '2026-03-07', '09:00', '12:00');
-  addEv(cseDeptId, 'Project Lab', hodUidRef, 'Project Expo 2026', 'Final year student project exhibition for CSE department.', '2026-03-10', '10:00', '17:00');
-  addEv(null, 'Main Auditorium', adminUid, 'College Annual Day', 'Grand annual day celebrations with cultural programs.', '2026-03-15', '09:00', '18:00');
-  addEv(cseDeptId, 'CS Classroom A', hodUidRef, 'Hackathon Kickoff', 'Orientation and problem statement release for 24hr CSE Hackathon.', '2026-03-20', '14:00', '16:00');
-  addEv(cseDeptId, 'Networking Lab', hodUidRef, 'CCNA Certification Prep', 'Preparation session for Cisco CCNA networking certification.', '2026-03-25', '11:00', '14:00');
+  for (const [docUname, patUname, text, rating] of feedbackData) {
+    const docId = getDoctorId(docUname);
+    const patUid = getPatientUid(patUname);
+    const analysis = processFeedback(text);
+    const kwStr = JSON.stringify(analysis.keywords);
+    run('INSERT INTO Feedback(doctor_id, patient_user_id, raw_text, rating, sentiment_score, extracted_keywords, created_at) VALUES(?,?,?,?,?,?,datetime(?))',
+      [docId, patUid, text, rating, analysis.sentimentScore, kwStr, '2026-03-' + String(Math.floor(Math.random() * 20 + 1)).padStart(2, '0') + 'T10:00:00']);
+  }
 
   persist();
-  console.log('[DB] Seed complete!');
+  console.log('[DB] MediPath seed complete!');
 }
 
 // ─── Exports ──────────────────────────────────────────────
-// We export an object that mirrors the better-sqlite3 synchronous API
-// but routes through our sql.js wrapper.
 const dbProxy = { run, get, all, persist };
-
-// Initialize and export the ready promise too
 dbProxy.ready = initDb().then(() => dbProxy).catch(e => { console.error('[DB] Init failed:', e); process.exit(1); });
 
 module.exports = dbProxy;

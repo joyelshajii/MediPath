@@ -28,32 +28,30 @@ const API = {
     patch(path, body) { return this.request('PATCH', path, body); },
     del(path) { return this.request('DELETE', path); },
 
-    // Convenience methods
+    // Auth
     login(u, p) { return this.post('/auth/login', { username: u, password: p }); },
-    getFaculty() { return this.get('/faculty'); },
-    getFacultyByDept(d) { return this.get(`/faculty/dept/${d}`); },
-    // Self-resolving: backend uses JWT to find the faculty's own schedule
-    getMySchedule() { return this.get('/faculty/me/schedule'); },
-    getFacultySchedule(id) { return this.get(`/faculty/${id}/schedule`); },
-    addSchedule(fid, body) { return this.post(`/faculty/${fid}/schedule`, body); },
-    delSchedule(sid) { return this.del(`/faculty/schedule/${sid}`); },
-    updateFaculty(fid, body) { return this.put(`/faculty/${fid}`, body); },
 
-    getEvents(params = {}) {
-        const q = new URLSearchParams(params).toString();
-        return this.get(`/events${q ? '?' + q : ''}`);
-    },
-    // Fetch events created by a specific user (for faculty's own events)
-    getMyEvents(userId) { return this.get(`/events?created_by=${userId}`); },
-    createEvent(body) { return this.post('/events', body); },
-    updateEvent(id, body) { return this.put(`/events/${id}`, body); },
-    deleteEvent(id) { return this.del(`/events/${id}`); },
+    // Navigation
+    getNodes() { return this.get('/navigation/nodes'); },
+    getEdges() { return this.get('/navigation/edges'); },
+    getRooms() { return this.get('/navigation/rooms'); },
+    getRoute(from, to) { return this.get(`/navigation/route?from=${from}&to=${to}`); },
+    resolveQR(code) { return this.get(`/navigation/qr/${encodeURIComponent(code)}`); },
 
-    getLocations(deptId) { return this.get(`/locations${deptId ? '?dept_id=' + deptId : ''}`); },
-    createLocation(body) { return this.post('/locations', body); },
-    updateLocation(id, body) { return this.put(`/locations/${id}`, body); },
-    deleteLocation(id) { return this.del(`/locations/${id}`); },
+    // Doctors
+    getDoctors() { return this.get('/doctors'); },
+    getDoctor(id) { return this.get(`/doctors/${id}`); },
+    getDoctorsByDept(deptId) { return this.get(`/doctors/department/${deptId}`); },
+    updateDoctorStatus(id, body) { return this.put(`/doctors/${id}/status`, body); },
+    getMyDoctorProfile() { return this.get('/doctors/me/profile'); },
 
+    // Feedback
+    submitFeedback(body) { return this.post('/feedback', body); },
+    getDoctorFeedback(doctorId) { return this.get(`/feedback/doctor/${doctorId}`); },
+    getDoctorReport(doctorId) { return this.get(`/feedback/doctor/${doctorId}/report`); },
+    getFeedbackSummary() { return this.get('/feedback/summary'); },
+
+    // Users
     getUsers(params = {}) {
         const q = new URLSearchParams(params).toString();
         return this.get(`/users${q ? '?' + q : ''}`);
@@ -63,13 +61,27 @@ const API = {
     updateUser(id, body) { return this.put(`/users/${id}`, body); },
     deleteUser(id) { return this.del(`/users/${id}`); },
     toggleAccess(id, flag) { return this.patch(`/users/${id}/access`, { is_active: flag }); },
-    changeRole(id, role) { return this.patch(`/users/${id}/role`, { role_name: role }); },
 
+    // Departments
     getDepartments() { return this.get('/departments'); },
     createDept(body) { return this.post('/departments', body); },
     updateDept(id, body) { return this.put(`/departments/${id}`, body); },
     deleteDept(id) { return this.del(`/departments/${id}`); },
 
-    getSlots() { return this.get('/utils/slots'); },
+    // Locations (kept for compatibility)
+    getLocations(deptId) { return this.get(`/locations${deptId ? '?dept_id=' + deptId : ''}`); },
+
+    // Schedules
+    getMySchedules() { return this.get('/schedules/my'); },
+    getUserSchedules(userId) { return this.get(`/schedules/user/${userId}`); },
+    getDeptSchedules(deptId) { return this.get(`/schedules/department/${deptId}`); },
+    createSchedule(body) { return this.post('/schedules', body); },
+    updateSchedule(id, body) { return this.put(`/schedules/${id}`, body); },
+    deleteSchedule(id) { return this.del(`/schedules/${id}`); },
+    getNurseAllocations() { return this.get('/schedules/nurse/allocations'); },
+    createNurseAllocation(body) { return this.post('/schedules/nurse/allocations', body); },
+    deleteNurseAllocation(id) { return this.del(`/schedules/nurse/allocations/${id}`); },
+
+    // Utility
     getRoles() { return this.get('/utils/roles'); },
 };

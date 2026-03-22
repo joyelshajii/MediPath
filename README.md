@@ -1,77 +1,67 @@
-# CampusPath: Campus Navigation System
+# MediPath: Hospital Navigation & Management System
 
-CampusPath is a comprehensive, full-stack campus navigation and management system designed to streamline faculty availability tracking, event venue management, and real-time navigation. It features a robust Role-Based Access Control (RBAC) system for various campus stakeholders.
+MediPath is a comprehensive, full-stack hospital navigation and management system designed to streamline indoor routing, doctor availability tracking, and patient feedback. It features a robust Role-Based Access Control (RBAC) system and a Guest-first experience for public hospital visitors.
 
-##  Key Features
+## Key Features
 
--   **Role-Based Access Control (RBAC)**: Custom dashboards and permissions for students, faculty, coordinators, HODs, and admins.
--   **Faculty Management**: Track faculty availability, schedules, and departmental details.
--   **Event & Venue Tracking**: Manage campus events, check venue availability, and book locations.
--   **Interactive Navigation**: Real-time campus navigation to find departments, blocks, and specific rooms.
--   **Department Coordination**: Tools for HODs and Coordinators to manage their respective departments and faculty.
+- **Indoor Navigation**: SVG-based indoor routing system with QR code integration for instant origin detection.
+- **Doctor Board**: Real-time tracking of doctor availability and current status (Available, Busy, In Surgery, etc.) powered by WebSockets.
+- **Guest-First Landing**: The application defaults to a public-facing dashboard, allowing visitors to navigate and view hospital info without logging in.
+- **Mandatory Patient Feedback**: A feedback system with sentiment analysis that requires a Patient ID / OP Number for verified reporting.
+- **Schedule Management**: Shift and appointment scheduling for doctors and nurses, with department-scoped management for HoDs and Coordinators.
+- **Role-Based Access Control (RBAC)**: Detailed permission tiers for Admins, HoDs, Coordinators, Doctors, Nurses, and Guests.
 
-##  Technology Stack
+## Technology Stack
 
--   **Frontend**: 
-    -   HTML5 & CSS3 (Custom responsive designs)
-    -   Vanilla JavaScript (Single-page application logic)
--   **Backend**: 
-    -   Node.js & Express.js
-    -   JWT (JSON Web Tokens) for secure authentication
-    -   Bcrypt.js for password hashing
--   **Database**: 
-    -   SQL.js (SQLite implementation for Node.js)
+- **Frontend**: 
+    - HTML5 & CSS3 (Custom responsive implementation)
+    - Vanilla JavaScript (Single-page application logic)
+- **Backend**: 
+    - Node.js & Express.js
+    - WebSockets (ws) for real-time status updates
+    - JWT (JSON Web Tokens) for secure authentication
+- **Database**: 
+    - SQL.js (SQLite implementation for Node.js)
 
-##  Project Structure
+## Project Structure
 
 ```text
-campuspath2/
+MediPath/
 ├── public/             # Frontend assets
-│   ├── css/            # Stylings
-│   ├── js/             # Frontend logic & API handlers
+│   ├── css/            # Custom style tokens and UI components
+│   ├── js/             # Modular JS components (api, navigation, feedback, schedules, etc.)
 │   └── index.html      # Main application entry
 ├── server/             # Backend application
-│   ├── middleware/     # Auth & RBAC logic
-│   ├── routes/         # API endpoints (Auth, Users, Events, etc.)
-│   ├── database.js     # SQL.js initialization & queries
-│   └── index.js        # Server entry point
-└── campuspath.sqlite   # Project database
+│   ├── middleware/     # Auth, RBAC, and department-scoping logic
+│   ├── routes/         # API endpoints for Navigation, Doctors, Feedback, Schedules
+│   ├── database.js     # SQL.js initialization, schema, and seed data
+│   └── index.js        # Express server entry point
+└── medipath.sqlite     # Project database
 ```
 
-##  Setup & Installation
+## Setup & Installation
 
-1.  **Clone the Repository**:
-    ```bash
-    git clone https://github.com/your-username/campuspath.git
-    cd campuspath
-    ```
-
-2.  **Install Dependencies**:
+1.  **Install Dependencies**:
     ```bash
     npm install
     ```
 
-3.  **Run the Application**:
+2.  **Run the Application**:
     ```bash
     npm start
-    # or
-    npm run dev
     ```
 
-4.  **Access the App**:
+3.  **Access the App**:
     Open your browser and navigate to `http://localhost:3000`.
 
-##  User Roles
+## Demo Logins
 
--   **Admin**: Full system control, user management, and global data access.
--   **HOD (Head of Department)**: Manage departmental faculty, schedules, and reports.
--   **Coordinator**: Assist in scheduling and departmental event management.
--   **Faculty**: Manage personal schedules, availability, and view student requests.
--   **Student**: View navigation, faculty schedules, and event updates.
-
-##  License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+- **Admin**: `admin / admin123`
+- **HoD (Medicine)**: `hod.med / hod123`
+- **Coordinator**: `coord.med / coord123`
+- **Doctor**: `dr.kumar / doc123`
+- **Patient**: `patient1 / pat123`
 
 ---
+
 
