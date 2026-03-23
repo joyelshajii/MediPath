@@ -1,6 +1,5 @@
 'use strict';
 const DoctorsPage = {
-    _ws: null,
     async render(container) {
         let doctors;
         try {
@@ -27,7 +26,6 @@ const DoctorsPage = {
         <div class="doctor-grid" id="doctor-grid">
             ${doctors.map(d => this._card(d)).join('')}
         </div>`;
-        this._connectWS();
     },
     _card(d) {
         const sl = { available: 'Available', busy: 'Busy', in_surgery: 'In Surgery', off_duty: 'Off Duty', on_break: 'On Break' };
@@ -64,16 +62,6 @@ const DoctorsPage = {
                 </button>` : ''}
             </div>
         </div>`;
-    },
-    _connectWS() {
-        try {
-            const p = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            this._ws = new WebSocket(`${p}//${location.host}/ws`);
-            window._doctorWs = this._ws;
-            this._ws.onopen = () => { const e = document.getElementById('ws-status'); if (e) { e.textContent = '● Live'; e.style.color = '#22c55e'; } };
-            this._ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.type === 'doctor_status') this._updateCard(m.data); };
-            this._ws.onclose = () => { const e = document.getElementById('ws-status'); if (e) { e.textContent = '● Offline'; e.style.color = '#ef4444'; } };
-        } catch (e) { console.warn('WS fail:', e); }
     },
     _updateCard(data) {
         const card = document.querySelector(`[data-doctor-id="${data.doctor_id}"]`);

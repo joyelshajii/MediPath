@@ -4,6 +4,9 @@ const db = require('../database');
 const { authenticate, checkDeptScope } = require('../middleware/auth');
 const router = express.Router();
 
+let _broadcast = null;
+router.setBroadcast = (fn) => { _broadcast = fn; };
+
 // ─── My Schedules (Doctor/Nurse — own) ────────────────────
 router.get('/my', authenticate, (req, res) => {
   if (!['doctor', 'nurse'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
@@ -55,6 +58,7 @@ router.post('/', authenticate, (req, res) => {
   const r = db.run('INSERT INTO Schedules(user_id,title,schedule_type,start_time,end_time,notes) VALUES(?,?,?,?,?,?)',
     [targetUserId, title, schedule_type || 'appointment', start_time, end_time, notes || null]);
   db.persist();
+  if (_broadcast) _broadcast({ type: 'schedule_updated', user_id: targetUserId });
   res.json({ schedule_id: r.lastInsertRowid, success: true });
 });
 
@@ -80,6 +84,7 @@ router.put('/:id', authenticate, (req, res) => {
   if (end_time) db.run('UPDATE Schedules SET end_time=? WHERE schedule_id=?', [end_time, req.params.id]);
   if (notes !== undefined) db.run('UPDATE Schedules SET notes=? WHERE schedule_id=?', [notes, req.params.id]);
   db.persist();
+  if (_broadcast) _broadcast({ type: 'schedule_updated', user_id: sched.user_id });
   res.json({ success: true });
 });
 
@@ -97,6 +102,7 @@ router.delete('/:id', authenticate, (req, res) => {
   }
   db.run('DELETE FROM Schedules WHERE schedule_id=?', [req.params.id]);
   db.persist();
+  if (_broadcast) _broadcast({ type: 'schedule_updated', user_id: sched.user_id });
   res.json({ success: true });
 });
 

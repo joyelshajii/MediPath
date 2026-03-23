@@ -10,12 +10,17 @@ const NavigationPage = {
     _originNodeId: null,
 
     async render(container) {
-        const [nodes, edges, rooms] = await Promise.all([
-            API.getNodes(), API.getEdges(), API.getRooms()
-        ]);
-        this._nodes = nodes;
-        this._edges = edges;
-        this._rooms = rooms;
+        if (!this._nodes.length) {
+            const [nodes, edges, rooms] = await Promise.all([
+                API.getNodes(), API.getEdges(), API.getRooms()
+            ]);
+            this._nodes = nodes;
+            this._edges = edges;
+            this._rooms = rooms;
+        }
+        const nodes = this._nodes;
+        const edges = this._edges;
+        const rooms = this._rooms;
 
         const floors = [...new Set(nodes.map(n => n.floor))].sort();
 

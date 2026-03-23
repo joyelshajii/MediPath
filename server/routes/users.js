@@ -8,7 +8,7 @@ const router = express.Router();
 // GET /users — Admin sees all, HoD/Coordinator see own dept only
 router.get('/', authenticate, (req, res) => {
     const { role } = req.user;
-    if (!['admin', 'hod', 'coordinator'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
+    if (!['admin', 'hod', 'coordinator', 'receptionist'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
     const { role_filter, dept_id: deptFilter } = req.query;
     let sql = `SELECT u.user_id, u.username, u.full_name, u.email, u.is_active,
              r.role_name AS role, d.dept_name, d.dept_code, d.dept_id
@@ -44,8 +44,11 @@ router.post('/', authenticate, (req, res) => {
     if (!username || !password || !full_name || !role_name) return res.status(400).json({ error: 'Missing required fields' });
 
     // HoD/Coordinator can only create doctor or nurse within their dept
+    // Receptionist can only create patient account
     if (['hod', 'coordinator'].includes(role)) {
         if (!['doctor', 'nurse'].includes(role_name)) return res.status(403).json({ error: 'Can only create doctor or nurse accounts' });
+    } else if (role === 'receptionist') {
+        if (role_name !== 'patient') return res.status(403).json({ error: 'Receptionists can only create patient accounts' });
     }
 
     const effectiveDeptId = (role === 'admin') ? (dept_id || null) : req.user.dept_id;
@@ -97,10 +100,10 @@ router.put('/:id', authenticate, (req, res) => {
 // DELETE /users/:id — Admin (any), HoD (dept-scoped, no admin/hod deletion)
 router.delete('/:id', authenticate, (req, res) => {
     const { role } = req.user;
-    if (!['admin', 'hod'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
+    if (!['admin', 'hod', 'coordinator'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
     const target = db.get('SELECT u.*, r.role_name FROM Users u JOIN Roles r ON u.role_id = r.role_id WHERE u.user_id=?', [req.params.id]);
     if (!target) return res.status(404).json({ error: 'Not found' });
-    if (role === 'hod') {
+    if (['hod', 'coordinator'].includes(role)) {
         if (['admin', 'hod'].includes(target.role_name)) return res.status(403).json({ error: 'Cannot delete admin or HoD accounts' });
         if (!checkDeptScope(req, res, target.dept_id)) return;
     }
@@ -112,13 +115,13 @@ router.delete('/:id', authenticate, (req, res) => {
     res.json({ success: true });
 });
 
-// PATCH /users/:id/access — Admin (any), HoD (dept-scoped)
+// PATCH /users/:id/access — Admin (any), HoD/Coordinator (dept-scoped)
 router.patch('/:id/access', authenticate, (req, res) => {
     const { role } = req.user;
-    if (!['admin', 'hod'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
+    if (!['admin', 'hod', 'coordinator'].includes(role)) return res.status(403).json({ error: 'Forbidden' });
     const target = db.get('SELECT * FROM Users WHERE user_id=?', [req.params.id]);
     if (!target) return res.status(404).json({ error: 'Not found' });
-    if (role === 'hod' && !checkDeptScope(req, res, target.dept_id)) return;
+    if (['hod', 'coordinator'].includes(role) && !checkDeptScope(req, res, target.dept_id)) return;
     const { is_active } = req.body;
     db.run('UPDATE Users SET is_active=? WHERE user_id=?', [is_active ? 1 : 0, req.params.id]);
     db.persist();

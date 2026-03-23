@@ -90,9 +90,9 @@ router.get('/rooms', (_req, res) => {
   res.json(db.all("SELECT * FROM Nodes WHERE node_type = 'room' ORDER BY floor, label"));
 });
 
-// ─── Admin/HoD: CRUD nodes ───────────────────────────────
+// ─── Admin/HoD/Coordinator: CRUD nodes ───────────────────────────────
 router.post('/nodes', authenticate, (req, res) => {
-  if (!['admin', 'hod'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
+  if (!['admin', 'hod', 'coordinator'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   const { x, y, floor, node_type, label, qr_code } = req.body;
   const r = db.run('INSERT INTO Nodes(facility_id,x,y,floor,node_type,label,qr_code) VALUES(1,?,?,?,?,?,?)',
     [x, y, floor, node_type, label, qr_code || null]);
@@ -101,7 +101,7 @@ router.post('/nodes', authenticate, (req, res) => {
 });
 
 router.put('/nodes/:id', authenticate, (req, res) => {
-  if (!['admin', 'hod'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
+  if (!['admin', 'hod', 'coordinator'].includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   const { x, y, floor, node_type, label, qr_code } = req.body;
   db.run('UPDATE Nodes SET x=?, y=?, floor=?, node_type=?, label=?, qr_code=? WHERE node_id=?',
     [x, y, floor, node_type, label, qr_code || null, req.params.id]);

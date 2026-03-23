@@ -65,6 +65,26 @@
           </svg>
         </button>
       </form>
+      <div class="login-hints">
+        <p class="hint-title">Demo Logins</p>
+        <div class="hints-grid">
+          <div class="hint-item" onclick="quickLogin('admin','admin123')">
+            <span class="role-badge role-admin">Admin</span><code>admin / admin123</code>
+          </div>
+          <div class="hint-item" onclick="quickLogin('hod.med','hod123')">
+            <span class="role-badge role-admin">HoD (Med)</span><code>hod.med / hod123</code>
+          </div>
+          <div class="hint-item" onclick="quickLogin('coord.med','coord123')">
+            <span class="role-badge role-receptionist">Coord (Med)</span><code>coord.med / coord123</code>
+          </div>
+          <div class="hint-item" onclick="quickLogin('dr.kumar','doc123')">
+            <span class="role-badge role-doctor">Doctor</span><code>dr.kumar / doc123</code>
+          </div>
+          <div class="hint-item" onclick="quickLogin('patient1','pat123')">
+            <span class="role-badge role-patient">Patient</span><code>patient1 / pat123</code>
+          </div>
+        </div>
+      </div>
       <div style="margin-top: 24px; text-align: center;">
         <button type="button" class="btn btn-outline btn-full" onclick="hideLogin()">
           <span>Cancel</span>

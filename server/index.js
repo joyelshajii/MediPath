@@ -67,8 +67,9 @@ db.ready.then(() => {
     });
   }
 
-  // Wire broadcast to doctors route
+  // Wire broadcast to routes
   doctorsRoutes.setBroadcast(broadcast);
+  schedulesRoutes.setBroadcast(broadcast);
 
   server.listen(PORT, () => {
     console.log(`\nMediPath running at http://localhost:${PORT}\n`);
